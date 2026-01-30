@@ -1,10 +1,17 @@
 import logging
 from quantnet_controller.common.plugin import ProtocolPlugin, PluginType, Path
-from quantnet_controller.common.utils import generate_uuid
-from quantnet_controller.common.request import RequestManager, RequestType
+from quantnet_controller.common.request import (
+    RequestManager,
+    RequestType,
+    RequestParameter,
+)
 from quantnet_mq import Code
-from quantnet_mq.schema.models import bsm, Status as responseStatus, QNode, BSMNode
-from quantnet_controller.core import AbstractDatabase as DB
+from quantnet_mq.schema.models import (
+    bsm,
+    Status as responseStatus,
+    QNode,
+    BSMNode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,17 +19,42 @@ logger = logging.getLogger(__name__)
 class BSM(ProtocolPlugin):
     def __init__(self, context):
         super().__init__("bsm", PluginType.PROTOCOL, context)
-        self._client_commands = []
+        self._client_commands = [
+            (
+                "experiment.submit",
+                None,
+                "quantnet_mq.schema.models.experiment.submit",
+            ),
+            (
+                "experiment.getResult",
+                None,
+                "quantnet_mq.schema.models.experiment.getResult",
+            ),
+            (
+                "experiment.cancel",
+                None,
+                "quantnet_mq.schema.models.experiment.cancel",
+            ),
+        ]
         self._server_commands = [
-            ("bsmRequest", self.handle_bsm_request, "quantnet_mq.schema.models.bsm.bsmRequest"),
-            ("bsmQuery", self.handle_bsm_query, "quantnet_mq.schema.models.bsm.bsmQuery"),
+            (
+                "bsmRequest",
+                self.handle_bsm_request,
+                "quantnet_mq.schema.models.bsm.bsmRequest",
+            ),
+            (
+                "bsmQuery",
+                self.handle_bsm_query,
+                "quantnet_mq.schema.models.bsm.bsmQuery",
+            ),
         ]
         self._msg_commands = list()
         self.ctx = context
-        self._db = DB().handler("BSM")
 
         self.request_manager = RequestManager(
-            context, plugin_schema=bsm.bsmRequest, request_type=RequestType.EXPERIMENT
+            context,
+            plugin_schema=bsm.bsmRequest,
+            request_type=RequestType.EXPERIMENT,
         )
 
     def initialize(self):
@@ -37,7 +69,10 @@ class BSM(ProtocolPlugin):
     def validate_request(self, req):
         nodes = self.ctx.rm.get_nodes(*req.payload.nodes)
         for n in nodes:
-            if n.systemSettings.type not in [QNode.__title__, BSMNode.__title__]:
+            if n.systemSettings.type not in [
+                QNode.__title__,
+                BSMNode.__title__,
+            ]:
                 raise Exception(f"Node {n.systemSettings.ID} is not a BSMNode")
         return nodes
 
@@ -50,8 +85,13 @@ class BSM(ProtocolPlugin):
             nodes = self.validate_request(payload)
         except Exception as e:
             logger.error(f"Invalid argument in request: {e}")
-            rc = Code.INVALID_ARGUMENT
-            return bsm.bsmResponse(status=responseStatus(code=rc.value, value=Code(rc).name, message=f"{e}"))
+            return bsm.bsmResponse(
+                status=responseStatus(
+                    code=rc.value,
+                    value=Code(rc).name,
+                    message=f"{e}",
+                )
+            )
 
         try:
             p = Path(nodes)
@@ -60,26 +100,32 @@ class BSM(ProtocolPlugin):
         except Exception as e:
             logger.error(f"Could not find valid resources: {e}")
             rc = Code.INVALID_ARGUMENT
-            return bsm.bsmResponse(status=responseStatus(code=rc.value, value=Code(rc).name, message=f"{e}"))
+            return bsm.bsmResponse(
+                status=responseStatus(
+                    code=rc.value,
+                    value=Code(rc).name,
+                    message=f"{e}",
+                )
+            )
 
-        parameters = {"exp_name": "BSM",
-                      "path": p,
-                      # Any additional experiment execution parameters would go here
-                      }
+        parameters = RequestParameter(exp_name="BSM", path=p.to_node_ids())
 
         # Create Request object through RequestManager
-        # Payload encapsulates the plugin request (nodes, rate, duration are already in payload)
-        req = self.request_manager.new_request(payload=payload, parameters=parameters)
+        # Payload encapsulates the plugin request
+        req = self.request_manager.new_request(
+            payload=payload, parameters=parameters
+        )
 
         # Schedule the request
-        rc = await self.request_manager.schedule(req, blocking=True)
+        fut = self.request_manager.noSchedule(req, blocking=True)
+        rc = await fut
 
         return bsm.bsmResponse(
-            status=responseStatus(code=rc.value,
-                                  value=Code(rc).name,
-                                  message=f"{path}"),
-                                  rtype=str(payload.cmd),
-            rid=req.id
+            status=responseStatus(
+                code=rc.value, value=rc.name, message=f"{path}"
+            ),
+            rtype=str(payload.cmd),
+            rid=req.id,
         )
 
     async def handle_bsm_query(self, request):
@@ -91,16 +137,17 @@ class BSM(ProtocolPlugin):
         try:
             rid = str(payload.payload.rid)
             # Get request with experiment result
-            req = await self.request_manager.get_request(rid, include_result=True)
+            req = await self.request_manager.get_request(
+                rid, include_result=True
+            )
+
+            if req is None:
+                raise Exception("Request ID not found")
 
             return bsm.bsmResponse(
-                status=responseStatus(
-                    code=req.status_code.value,
-                    value=req.status_code.name,
-                    message=req.status_message
-                ),
+                status=req.status,
                 rid=rid,
-                data=getattr(req, 'experiment_data', None),
+                data=getattr(req, "experiment_data", None),
             )
 
         except Exception as e:
