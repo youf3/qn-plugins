@@ -2,22 +2,22 @@ from quantnet_controller.common.experimentdefinitions import Sequence, AgentSequ
 from datetime import timedelta
 
 
-class QnodeLBNLSPG(Sequence):
+class QnodeLBSM(Sequence):
     name = "BSM"
     class_name = "BSM"
-    duration = timedelta(microseconds=10000)
+    duration = timedelta(seconds=240)
     dependency = []
 
 
-class SPGQnodeLBNLSequence(AgentSequences):
+class BSMQnodeLBNLSequence(AgentSequences):
     name = "BSM for Qnode@LBNL"
-    node_type = "BSMNode"
-    sequences = [QnodeLBNLSPG]
+    node_type = "QNode"
+    sequences = [QnodeLBSM]
 
 
-class SinglePhotonGenerationLBNL(Experiment):
+class BSMExperiment(Experiment):
     name = "BSM"
-    agent_sequences = [SPGQnodeLBNLSequence]
+    agent_sequences = [BSMQnodeLBNLSequence, BSMQnodeLBNLSequence]
 
     def get_sequence(self, agent_index):
         return self.agent_sequences[agent_index]
