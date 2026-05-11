@@ -39,7 +39,7 @@ if __name__ == "__main__":
         rate = sys.argv[2]
         duration = sys.argv[3]
     else:
-        nodes = ["LBNL-Q"]
+        nodes = ["LBNL-Q", "UCB-Q", "LBNL-BSM"]
         rate = 100
         duration = 30
     asyncio.run(MyBSM(nodes, rate, duration).main())
