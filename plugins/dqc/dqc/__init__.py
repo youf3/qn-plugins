@@ -37,6 +37,7 @@ from ir_converter import labeled_ir_to_timeslot_schedule
 from qnpack.dqc.frontends import load_frontend
 from qnpack.dqc.labeling import label_and_build_maps
 from qnpack.dqc.models.validation import validate_commands
+from qnpack.dqc.protocols.controller import insert_pre_entanglement_commands
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,16 @@ def _to_plain(obj):
 
 
 class DQC(ProtocolPlugin):
+    # ── Pre-entanglement scheduling defaults ──────────────────────────────────
+    # These control whether entanglement_gen commands are moved earlier in
+    # the QPU schedule to overlap Bell-pair generation latency with local
+    # gate execution.  Change the constants here to tune the behaviour;
+    # they will be relocated to plugin config in a future change.
+    PRE_SCHEDULE_ENTANGLEMENT = True
+    EXPECTED_ENT_LATENCY_NS = 1_000_000      # 1 ms — expected Bell-pair gen time
+    ONE_Q_GATE_DURATION_NS = 5000            # ns per single-qubit gate
+    TWO_Q_GATE_DURATION_NS = 10700           # ns per two-qubit gate
+
     def __init__(self, context):
         super().__init__("dqc", PluginType.PROTOCOL, context)
         self._server_commands = [
@@ -106,6 +117,9 @@ class DQC(ProtocolPlugin):
 
             # ── 2. Validate + Label via qnpack ────────────────────────────────
             labeled, process_maps = self._label_commands(partitioned)
+
+            # ── 2b. Pre-schedule entanglement commands ────────────────────────
+            pre_ent_stats = self._pre_schedule(labeled)
 
             # ── 3. Convert labeled IR → flat timeslot schedule ────────────────
             qpu_info, qpu_id_to_label, label_to_qpu_id, bsm_nodes, raw_topology = get_qpu_info_from_topology(self.ctx)
@@ -196,7 +210,10 @@ class DQC(ProtocolPlugin):
                 await self.request_manager.schedule(req_obj, blocking=True)
 
                 # ── 6. Build simulation payload for caller ────────────────────
-                sim_payload = self._build_sim_payload(labeled, process_maps, raw_topology, frontend_meta)
+                sim_payload = self._build_sim_payload(
+                    labeled, process_maps, raw_topology, frontend_meta,
+                    pre_scheduled=(pre_ent_stats is not None),
+                )
 
                 return dqc.dqcResponse(
                     status=responseStatus(code=Code.OK.value, value=Code.OK.name, message="DQC execution completed"),
@@ -324,7 +341,50 @@ class DQC(ProtocolPlugin):
         )
         return labeled, process_maps
 
-    def _build_sim_payload(self, labeled, process_maps, topology, frontend_meta=None):
+    def _pre_schedule(self, labeled):
+        """Apply pre-entanglement scheduling to labeled commands.
+
+        Moves ``entanglement_gen`` commands earlier in each QPU's command list
+        to overlap Bell-pair generation latency with local gate execution.
+        The commands dict is mutated in place.
+
+        :param labeled: ``{int_qpu_id: [cmd_dict, ...]}`` — mutated in place.
+        :returns: Stats dict from ``insert_pre_entanglement_commands()``,
+            or ``None`` if pre-scheduling is disabled.
+        :rtype: dict or None
+        """
+        if not self.PRE_SCHEDULE_ENTANGLEMENT:
+            return None
+
+        stats = insert_pre_entanglement_commands(
+            labeled,
+            expected_ent_latency_ns=self.EXPECTED_ENT_LATENCY_NS,
+            one_q_gate_duration_ns=self.ONE_Q_GATE_DURATION_NS,
+            two_q_gate_duration_ns=self.TWO_Q_GATE_DURATION_NS,
+        )
+
+        total = stats["total_pairs"]
+        moved = stats["moved_pairs"]
+        latency = stats["expected_latency_ns"]
+        logger.info(
+            f"[DQC] Pre-entanglement scheduling: {moved}/{total} pairs moved "
+            f"(expected latency={latency:,.0f} ns)"
+        )
+        if stats["moves"]:
+            total_gate_time = sum(
+                min(m["gate_time_ns"][0], m["gate_time_ns"][1])
+                for m in stats["moves"]
+            )
+            avg_overlap = total_gate_time / len(stats["moves"])
+            coverage = (avg_overlap / latency * 100) if latency > 0 else 0
+            logger.info(
+                f"[DQC] Avg gate-time overlap: {avg_overlap:,.0f} ns "
+                f"({coverage:.1f}% of expected latency)"
+            )
+
+        return stats
+
+    def _build_sim_payload(self, labeled, process_maps, topology, frontend_meta=None, pre_scheduled=False):
         """Build the JSON-serializable payload for qnpack simulation.
 
         Returns a dict the caller can write to a file and pass to
@@ -353,4 +413,6 @@ class DQC(ProtocolPlugin):
                 payload["num_output_bits"] = frontend_meta["num_output_bits"]
             if frontend_meta.get("output_reg_name"):
                 payload["output_reg_name"] = frontend_meta["output_reg_name"]
+        if pre_scheduled:
+            payload["pre_scheduled"] = True
         return payload
