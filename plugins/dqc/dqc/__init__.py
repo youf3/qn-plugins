@@ -33,6 +33,23 @@ from logic import DQCLogic
 from topology_adapter import get_qpu_info_from_topology
 from ir_converter import labeled_ir_to_timeslot_schedule
 
+# EGP Sequence leaf classes — imported directly so DQC can embed real hardware
+# entanglement sequences into the unified DynamicExperiment without an MQTT
+# round-trip through the EGP plugin.  If the EGP plugin is not installed the
+# import fails loudly here at load time rather than silently at request time.
+try:
+    from egp.experiment import QnodeEGP, BSMnodeEGP
+    _EGP_AVAILABLE = True
+except ImportError:
+    logger_tmp = __import__("logging").getLogger(__name__)
+    logger_tmp.warning(
+        "[DQC] egp.experiment not importable — EGP sequence injection disabled. "
+        "entanglement_gen blocks will fall back to BlockSequence placeholders."
+    )
+    QnodeEGP = None
+    BSMnodeEGP = None
+    _EGP_AVAILABLE = False
+
 # qnpack imports — pure Python, no NetSquid dependency
 from qnpack.dqc.frontends import load_frontend
 from qnpack.dqc.labeling import label_and_build_maps
@@ -146,9 +163,19 @@ class DQC(ProtocolPlugin):
             else:
                 logger.debug("No router plugin available or no cross-QPU pairs; skipping route discovery")
 
-            # ── 3c. Extract BSM nodes and build synthetic BSM commands ─────────
+            # ── 3c. Build egp_sequences map and collect BSM agent IDs ─────────
+            # Instead of injecting synthetic BSM command dicts, we build a map
+            # { agent_id: { entanglement_label: Sequence class } } that
+            # build_dynamic_experiment() uses to insert real EGP Sequence
+            # objects (QnodeEGP / BSMnodeEGP) at the correct position in each
+            # agent's sequence list.  This produces a single unified
+            # DynamicExperiment whose allocations cover both local gate blocks
+            # and entanglement sequences in one get_slots_to_allocate() call.
+            #
+            # If the EGP plugin is unavailable, egp_sequences stays empty and
+            # build_dynamic_experiment falls back to BlockSequence placeholders.
             node_types = {}
-            bsm_commands = []
+            egp_sequences = {}   # { agent_id: { ent_label: Sequence class } }
             _seen_bsm_ids = set()
 
             for route_key, path_obj in _path_objects.items():
@@ -157,30 +184,47 @@ class DQC(ProtocolPlugin):
                     continue
 
                 src_qpu, dst_qpu = route_key.split("->") if "->" in route_key else (None, None)
-                pair_cmds = [
-                    c
+
+                # Collect all entanglement labels for this QPU pair so each
+                # Bell-pair generation gets its own EGP sequence entry.
+                pair_ent_labels = [
+                    c["entanglement_label"]
                     for c in commands
-                    if len(c.get("qpus_involved") or []) >= 2
+                    if c.get("op") == "entanglement_gen"
                     and src_qpu in [str(q) for q in c.get("qpus_involved", [])]
                     and dst_qpu in [str(q) for q in c.get("qpus_involved", [])]
+                    and c.get("entanglement_label")
                 ]
+
+                if not pair_ent_labels:
+                    logger.debug(
+                        f"[DQC] No entanglement_gen labels found for route {route_key}; "
+                        "skipping EGP sequence injection for this pair"
+                    )
+                    continue
 
                 for bsm_id in bsm_ids:
                     node_types[bsm_id] = "BSMNode"
                     if bsm_id in _seen_bsm_ids:
                         continue
                     _seen_bsm_ids.add(bsm_id)
-                    for cmd in pair_cmds:
-                        bsm_cmd = dict(cmd)
-                        bsm_cmd["qpu_id"] = bsm_id
-                        bsm_cmd["node_type"] = "BSMNode"
-                        bsm_commands.append(bsm_cmd)
-                    logger.info(f"Injected {len(pair_cmds)} BSM command(s) for " f"node {bsm_id} on route {route_key}")
 
-            if bsm_commands:
-                commands = commands + bsm_commands
+                    for label in pair_ent_labels:
+                        if _EGP_AVAILABLE:
+                            egp_sequences.setdefault(src_qpu, {})[label] = QnodeEGP
+                            egp_sequences.setdefault(dst_qpu, {})[label] = QnodeEGP
+                            egp_sequences.setdefault(bsm_id, {})[label] = BSMnodeEGP
+                        logger.info(
+                            f"[DQC] EGP sequence mapped for route {route_key} "
+                            f"label={label} bsm={bsm_id} "
+                            f"(egp_available={_EGP_AVAILABLE})"
+                        )
 
-            all_agent_ids = sorted(list(set(str(c.get("qpu_id")) for c in commands)))
+            # agent_ids now includes BSM nodes that appear in egp_sequences
+            # (build_dynamic_experiment handles pure-EGP agents separately).
+            all_agent_ids = sorted(
+                set(str(c.get("qpu_id")) for c in commands) | set(egp_sequences.keys())
+            )
             agent_ids = all_agent_ids
 
             # ── Resolve rid ───────────────────────────────────────────────────
@@ -192,7 +236,9 @@ class DQC(ProtocolPlugin):
 
             # ── 4. Build dynamic experiment structure ─────────────────────────
             exp_name = f"DQC_{rid}"
-            DynamicExp = self.logic.build_dynamic_experiment(exp_name, commands, node_types=node_types)
+            DynamicExp = self.logic.build_dynamic_experiment(
+                exp_name, commands, node_types=node_types, egp_sequences=egp_sequences
+            )
             if not DynamicExp:
                 raise Exception("No commands to process")
 

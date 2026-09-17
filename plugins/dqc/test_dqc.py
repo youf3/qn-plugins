@@ -284,5 +284,219 @@ class TestDQCPreScheduling(unittest.TestCase):
         self.assertNotIn("pre_scheduled", payload_without)
 
 
+class TestDQCEGPInjection(unittest.TestCase):
+    """Test EGP Sequence injection into build_dynamic_experiment()."""
+
+    def setUp(self):
+        self.context = MagicMock()
+        self.context.config = MagicMock()
+
+        # Build mock EGP Sequence leaf classes that mirror the real ones
+        # (same interface: name, class_name, duration attributes).
+        class _MockQnodeEGP(MockSequence):
+            name = "experiments/dds_output.py"
+            class_name = "DdsOutput"
+            duration = timedelta(microseconds=1000)
+            dependency = []
+
+        class _MockBSMnodeEGP(MockSequence):
+            name = "experiments/dds_output.py"
+            class_name = "DdsOutput"
+            duration = timedelta(microseconds=2000)
+            dependency = []
+
+        self.QnodeEGP = _MockQnodeEGP
+        self.BSMnodeEGP = _MockBSMnodeEGP
+
+    def _make_commands(self, ent_label="ent_0"):
+        """Return a minimal commands list with one entanglement_gen per QPU."""
+        return [
+            {
+                "timeslot": 0,
+                "qpu_id": "LBNL-A",
+                "command": "H LBNL-A[0]",
+                "op": "gate",
+                "qpus_involved": ["LBNL-A"],
+            },
+            {
+                "timeslot": 1,
+                "qpu_id": "LBNL-A",
+                "command": f"ENTG[{ent_label}] LBNL-A[0]->LBNL-B[0]",
+                "op": "entanglement_gen",
+                "entanglement_label": ent_label,
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+            {
+                "timeslot": 2,
+                "qpu_id": "LBNL-A",
+                "command": "CX LBNL-A[0] LBNL-A[1]",
+                "op": "gate",
+                "qpus_involved": ["LBNL-A"],
+            },
+            {
+                "timeslot": 0,
+                "qpu_id": "LBNL-B",
+                "command": f"ENTG[{ent_label}] LBNL-A[0]->LBNL-B[0]",
+                "op": "entanglement_gen",
+                "entanglement_label": ent_label,
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+        ]
+
+    def test_egp_injection_replaces_entanglement_block_for_qpu(self):
+        """QnodeEGP replaces the BlockSequence at the entanglement_gen position."""
+        logic = DQCLogic(self.context)
+        commands = self._make_commands("ent_0")
+        egp_sequences = {
+            "LBNL-A": {"ent_0": self.QnodeEGP},
+            "LBNL-B": {"ent_0": self.QnodeEGP},
+        }
+
+        exp = logic.build_dynamic_experiment(
+            "TestEGPExp", commands, egp_sequences=egp_sequences
+        )
+
+        self.assertIsNotNone(exp)
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        seqs = lbnl_a.sequences
+
+        # Expected order: Block_0_H, EGP sequence (QnodeEGP), Block_2_CX
+        self.assertEqual(len(seqs), 3)
+        # First block: local gate
+        self.assertTrue(seqs[0].name.startswith("Block_"))
+        # Second block: EGP injection — class_name and name must match QnodeEGP
+        self.assertEqual(seqs[1].class_name, "DdsOutput")
+        self.assertEqual(seqs[1].name, "experiments/dds_output.py")
+        self.assertEqual(seqs[1].duration, timedelta(microseconds=1000))
+        # Third block: post-entanglement gate
+        self.assertTrue(seqs[2].name.startswith("Block_"))
+
+    def test_egp_injection_dependency_chain(self):
+        """EGP-injected sequence inherits dependency from the preceding block."""
+        logic = DQCLogic(self.context)
+        commands = self._make_commands("ent_0")
+        egp_sequences = {
+            "LBNL-A": {"ent_0": self.QnodeEGP},
+            "LBNL-B": {"ent_0": self.QnodeEGP},
+        }
+
+        exp = logic.build_dynamic_experiment(
+            "TestDepsExp", commands, egp_sequences=egp_sequences
+        )
+
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        seqs = lbnl_a.sequences
+        # EGP sequence depends on the preceding gate block
+        self.assertEqual(len(seqs[1].dependency), 1)
+        self.assertEqual(seqs[1].dependency[0], seqs[0].name)
+        # Post-entanglement block depends on the EGP sequence
+        self.assertEqual(seqs[2].dependency[0], seqs[1].name)
+
+    def test_bsm_pure_egp_agent(self):
+        """BSM agent with no gate commands gets sequences only from egp_sequences."""
+        logic = DQCLogic(self.context)
+        commands = self._make_commands("ent_0")
+        egp_sequences = {
+            "LBNL-A": {"ent_0": self.QnodeEGP},
+            "LBNL-B": {"ent_0": self.QnodeEGP},
+            "LBNL-BSM": {"ent_0": self.BSMnodeEGP},
+        }
+
+        exp = logic.build_dynamic_experiment(
+            "TestBSMExp", commands,
+            node_types={"LBNL-BSM": "BSMNode"},
+            egp_sequences=egp_sequences,
+        )
+
+        # BSM agent should appear in agent_sequences
+        agent_names = [s.name for s in exp.agent_sequences]
+        self.assertIn("Seq_LBNL-BSM", agent_names)
+
+        bsm_seq = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-BSM")
+        self.assertEqual(bsm_seq.node_type, "BSMNode")
+        # One BSMnodeEGP entry per entanglement label
+        self.assertEqual(len(bsm_seq.sequences), 1)
+        self.assertEqual(bsm_seq.sequences[0].class_name, "DdsOutput")
+        self.assertEqual(bsm_seq.sequences[0].duration, timedelta(microseconds=2000))
+
+    def test_multiple_ent_labels_same_pair(self):
+        """Multiple entanglement labels on the same QPU pair all get EGP sequences."""
+        logic = DQCLogic(self.context)
+        commands = [
+            # First Bell pair
+            {
+                "timeslot": 0, "qpu_id": "LBNL-A", "command": "ENTG[ent_0] ...",
+                "op": "entanglement_gen", "entanglement_label": "ent_0",
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+            {
+                "timeslot": 1, "qpu_id": "LBNL-A", "command": "H LBNL-A[0]",
+                "op": "gate", "qpus_involved": ["LBNL-A"],
+            },
+            # Second Bell pair
+            {
+                "timeslot": 2, "qpu_id": "LBNL-A", "command": "ENTG[ent_1] ...",
+                "op": "entanglement_gen", "entanglement_label": "ent_1",
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+            {
+                "timeslot": 0, "qpu_id": "LBNL-B", "command": "ENTG[ent_0] ...",
+                "op": "entanglement_gen", "entanglement_label": "ent_0",
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+            {
+                "timeslot": 1, "qpu_id": "LBNL-B", "command": "ENTG[ent_1] ...",
+                "op": "entanglement_gen", "entanglement_label": "ent_1",
+                "qpus_involved": ["LBNL-A", "LBNL-B"],
+            },
+        ]
+        egp_sequences = {
+            "LBNL-A": {"ent_0": self.QnodeEGP, "ent_1": self.QnodeEGP},
+            "LBNL-B": {"ent_0": self.QnodeEGP, "ent_1": self.QnodeEGP},
+            "LBNL-BSM": {"ent_0": self.BSMnodeEGP, "ent_1": self.BSMnodeEGP},
+        }
+
+        exp = logic.build_dynamic_experiment(
+            "TestMultiEnt", commands,
+            node_types={"LBNL-BSM": "BSMNode"},
+            egp_sequences=egp_sequences,
+        )
+
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        # ent_0 block, gate block, ent_1 block → 3 sequences, both ent positions are EGP
+        egp_seqs = [s for s in lbnl_a.sequences if s.class_name == "DdsOutput"]
+        self.assertEqual(len(egp_seqs), 2)
+
+        bsm_seq = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-BSM")
+        # Two entanglement labels → two BSMnodeEGP entries
+        self.assertEqual(len(bsm_seq.sequences), 2)
+
+    def test_fallback_to_block_sequence_without_egp(self):
+        """Without egp_sequences, entanglement_gen falls back to BlockSequence."""
+        logic = DQCLogic(self.context)
+        commands = self._make_commands("ent_0")
+
+        exp = logic.build_dynamic_experiment("TestFallback", commands)
+
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        # All sequences must be BlockSequences (name starts with "Block_")
+        for seq in lbnl_a.sequences:
+            self.assertTrue(
+                seq.name.startswith("Block_"),
+                f"Expected BlockSequence but got {seq.name!r}",
+            )
+
+    def test_no_egp_agent_without_commands_and_no_egp_map(self):
+        """An agent with neither commands nor an egp_sequences entry is not included."""
+        logic = DQCLogic(self.context)
+        commands = [
+            {"timeslot": 0, "qpu_id": "LBNL-A", "command": "H", "op": "gate", "qpus_involved": ["LBNL-A"]},
+        ]
+        # LBNL-BSM is absent from both commands and egp_sequences
+        exp = logic.build_dynamic_experiment("TestNoOrphan", commands)
+        agent_names = [s.name for s in exp.agent_sequences]
+        self.assertNotIn("Seq_LBNL-BSM", agent_names)
+
+
 if __name__ == "__main__":
     unittest.main()
