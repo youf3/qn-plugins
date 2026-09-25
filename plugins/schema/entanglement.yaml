@@ -1,0 +1,224 @@
+---
+asyncapi: "2.6.0"
+id: "urn:gov:quant-net"
+info:
+  description: "Quant-Net RPC Continuous Entanglement Generation Interface"
+  title: "RPC Entanglement Endpoint"
+  version: "1.0.0"
+components:
+  messages:
+    EnableRequest:
+      name: enableRequest
+      messageId: entanglement.enable.request.id
+      payload:
+        "$ref": "#/components/schemas/EnableRequest"
+    EnableResponse:
+      name: enableResponse
+      messageId: entanglement.enable.response.id
+      payload:
+        "$ref": "#/components/schemas/EnableResponse"
+    StatusRequest:
+      name: statusRequest
+      messageId: entanglement.status.request.id
+      payload:
+        "$ref": "#/components/schemas/StatusRequest"
+    StatusResponse:
+      name: statusResponse
+      messageId: entanglement.status.response.id
+      payload:
+        "$ref": "#/components/schemas/StatusResponse"
+    ConsumeRequest:
+      name: consumeRequest
+      messageId: entanglement.consume.request.id
+      payload:
+        "$ref": "#/components/schemas/ConsumeRequest"
+    ConsumeResponse:
+      name: consumeResponse
+      messageId: entanglement.consume.response.id
+      payload:
+        "$ref": "#/components/schemas/ConsumeResponse"
+    DisableRequest:
+      name: disableRequest
+      messageId: entanglement.disable.request.id
+      payload:
+        "$ref": "#/components/schemas/DisableRequest"
+    DisableResponse:
+      name: disableResponse
+      messageId: entanglement.disable.response.id
+      payload:
+        "$ref": "#/components/schemas/DisableResponse"
+    CapabilitiesRequest:
+      name: capabilitiesRequest
+      messageId: entanglement.capabilities.request.id
+      payload:
+        "$ref": "#/components/schemas/CapabilitiesRequest"
+    CapabilitiesResponse:
+      name: capabilitiesResponse
+      messageId: entanglement.capabilities.response.id
+      payload:
+        "$ref": "#/components/schemas/CapabilitiesResponse"
+  schemas:
+    EnableRequest:
+      title: enableRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - peer_id
+          properties:
+            peer_id:
+              type: string
+            config:
+              type: object
+              properties:
+                pool_size:
+                  type: integer
+                min_fidelity:
+                  type: number
+                comm_positions:
+                  type: array
+                  items:
+                    type: integer
+    EnableResponse:
+      title: enableResponse
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+        reason:
+          type: string
+    StatusRequest:
+      title: statusRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - peer_id
+          properties:
+            peer_id:
+              type: string
+    StatusResponse:
+      title: statusResponse
+      type: object
+      required:
+        - available
+        - pairs
+        - enabled
+      properties:
+        available:
+          type: boolean
+        pairs:
+          type: integer
+        enabled:
+          type: boolean
+    ConsumeRequest:
+      title: consumeRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - peer_id
+          properties:
+            peer_id:
+              type: string
+    ConsumeResponse:
+      title: consumeResponse
+      type: object
+      properties:
+        pair:
+          type: object
+          properties:
+            comm_qubit_local:
+              type: integer
+            comm_qubit_remote:
+              type: integer
+            fidelity:
+              type: number
+            generation_time:
+              type: number
+    DisableRequest:
+      title: disableRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+        - payload
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+          required:
+            - peer_id
+          properties:
+            peer_id:
+              type: string
+    DisableResponse:
+      title: disableResponse
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+        reason:
+          type: string
+    CapabilitiesRequest:
+      title: capabilitiesRequest
+      type: object
+      required:
+        - cmd
+        - agentId
+      properties:
+        cmd:
+          type: string
+        agentId:
+          type: string
+        payload:
+          type: object
+    CapabilitiesResponse:
+      title: capabilitiesResponse
+      type: object
+      required:
+        - continuous_generation
+      properties:
+        continuous_generation:
+          type: boolean
+        max_peers:
+          type: integer
+        max_pool_size:
+          type: integer
+        supports_fidelity_tracking:
+          type: boolean
+defaultContentType: application/json

@@ -32,6 +32,7 @@ from quantnet_mq.schema.models import dqc, Status as responseStatus
 from logic import DQCLogic
 from topology_adapter import get_qpu_info_from_topology
 from ir_converter import labeled_ir_to_timeslot_schedule
+from entanglement_manager import EntanglementManager
 
 # EGP Sequence leaf classes — imported directly so DQC can embed real hardware
 # entanglement sequences into the unified DynamicExperiment without an MQTT
@@ -163,62 +164,102 @@ class DQC(ProtocolPlugin):
             else:
                 logger.debug("No router plugin available or no cross-QPU pairs; skipping route discovery")
 
-            # ── 3c. Build egp_sequences map and collect BSM agent IDs ─────────
-            # Instead of injecting synthetic BSM command dicts, we build a map
-            # { agent_id: { entanglement_label: Sequence class } } that
-            # build_dynamic_experiment() uses to insert real EGP Sequence
-            # objects (QnodeEGP / BSMnodeEGP) at the correct position in each
-            # agent's sequence list.  This produces a single unified
-            # DynamicExperiment whose allocations cover both local gate blocks
-            # and entanglement sequences in one get_slots_to_allocate() call.
+            # ── 3c. Check for continuous entanglement support ─────────────────
+            # If all QPU agents support continuous entanglement generation,
+            # enable it for the needed pairs and skip on-demand EGP sequences.
+            # Otherwise fall back to the existing on-demand EGP path.
+            use_continuous = False
+            _ent_manager = None
+            qpu_agent_ids = sorted(set(str(c.get("qpu_id")) for c in commands))
+
+            if qpu_pairs and hasattr(self.ctx, "rpc_client") and self.ctx.rpc_client:
+                try:
+                    _ent_manager = EntanglementManager(self.ctx)
+                    capabilities = await _ent_manager.query_capabilities(qpu_agent_ids)
+                    use_continuous = all(
+                        capabilities.get(qpu, {}).get("continuous_generation", False)
+                        for qpu in qpu_agent_ids
+                    )
+                except Exception as e:
+                    logger.debug(f"[DQC] Continuous entanglement check failed: {e}")
+                    use_continuous = False
+
+            if use_continuous:
+                ent_config = payload.get("entanglement_config", {})
+                try:
+                    enabled = await _ent_manager.enable_for_circuit(qpu_pairs, ent_config)
+                    if enabled:
+                        ready = await _ent_manager.wait_for_readiness(qpu_pairs)
+                        if not ready:
+                            logger.warning(
+                                "[DQC] Continuous entanglement not ready within timeout; "
+                                "falling back to on-demand EGP"
+                            )
+                            await _ent_manager.disable_all(qpu_agent_ids)
+                            use_continuous = False
+                    else:
+                        use_continuous = False
+                except Exception as e:
+                    logger.warning(f"[DQC] Continuous entanglement setup failed: {e}")
+                    use_continuous = False
+
+            if use_continuous:
+                logger.info("[DQC] Using continuous entanglement generation")
+
+            # ── 3d. Build egp_sequences map and collect BSM agent IDs ─────────
+            # When continuous entanglement is active, egp_sequences stays empty
+            # and entanglement_gen positions use BlockSequence placeholders.
+            # The agent consumes pairs from its EntanglementSource during
+            # circuit execution.
             #
-            # If the EGP plugin is unavailable, egp_sequences stays empty and
-            # build_dynamic_experiment falls back to BlockSequence placeholders.
+            # When continuous entanglement is NOT active (default), we build
+            # the on-demand EGP sequence map as before.
             node_types = {}
             egp_sequences = {}   # { agent_id: { ent_label: Sequence class } }
             _seen_bsm_ids = set()
 
-            for route_key, path_obj in _path_objects.items():
-                bsm_ids = self.logic.extract_bsm_nodes_from_path(path_obj)
-                if not bsm_ids:
-                    continue
-
-                src_qpu, dst_qpu = route_key.split("->") if "->" in route_key else (None, None)
-
-                # Collect all entanglement labels for this QPU pair so each
-                # Bell-pair generation gets its own EGP sequence entry.
-                pair_ent_labels = [
-                    c["entanglement_label"]
-                    for c in commands
-                    if c.get("op") == "entanglement_gen"
-                    and src_qpu in [str(q) for q in c.get("qpus_involved", [])]
-                    and dst_qpu in [str(q) for q in c.get("qpus_involved", [])]
-                    and c.get("entanglement_label")
-                ]
-
-                if not pair_ent_labels:
-                    logger.debug(
-                        f"[DQC] No entanglement_gen labels found for route {route_key}; "
-                        "skipping EGP sequence injection for this pair"
-                    )
-                    continue
-
-                for bsm_id in bsm_ids:
-                    node_types[bsm_id] = "BSMNode"
-                    if bsm_id in _seen_bsm_ids:
+            if not use_continuous:
+                for route_key, path_obj in _path_objects.items():
+                    bsm_ids = self.logic.extract_bsm_nodes_from_path(path_obj)
+                    if not bsm_ids:
                         continue
-                    _seen_bsm_ids.add(bsm_id)
 
-                    for label in pair_ent_labels:
-                        if _EGP_AVAILABLE:
-                            egp_sequences.setdefault(src_qpu, {})[label] = QnodeEGP
-                            egp_sequences.setdefault(dst_qpu, {})[label] = QnodeEGP
-                            egp_sequences.setdefault(bsm_id, {})[label] = BSMnodeEGP
-                        logger.info(
-                            f"[DQC] EGP sequence mapped for route {route_key} "
-                            f"label={label} bsm={bsm_id} "
-                            f"(egp_available={_EGP_AVAILABLE})"
+                    src_qpu, dst_qpu = route_key.split("->") if "->" in route_key else (None, None)
+
+                    # Collect all entanglement labels for this QPU pair so each
+                    # Bell-pair generation gets its own EGP sequence entry.
+                    pair_ent_labels = [
+                        c["entanglement_label"]
+                        for c in commands
+                        if c.get("op") == "entanglement_gen"
+                        and src_qpu in [str(q) for q in c.get("qpus_involved", [])]
+                        and dst_qpu in [str(q) for q in c.get("qpus_involved", [])]
+                        and c.get("entanglement_label")
+                    ]
+
+                    if not pair_ent_labels:
+                        logger.debug(
+                            f"[DQC] No entanglement_gen labels found for route {route_key}; "
+                            "skipping EGP sequence injection for this pair"
                         )
+                        continue
+
+                    for bsm_id in bsm_ids:
+                        node_types[bsm_id] = "BSMNode"
+                        if bsm_id in _seen_bsm_ids:
+                            continue
+                        _seen_bsm_ids.add(bsm_id)
+
+                        for label in pair_ent_labels:
+                            if _EGP_AVAILABLE:
+                                egp_sequences.setdefault(src_qpu, {})[label] = QnodeEGP
+                                egp_sequences.setdefault(dst_qpu, {})[label] = QnodeEGP
+                                egp_sequences.setdefault(bsm_id, {})[label] = BSMnodeEGP
+                            logger.info(
+                                f"[DQC] EGP sequence mapped for route {route_key} "
+                                f"label={label} bsm={bsm_id} "
+                                f"(egp_available={_EGP_AVAILABLE})"
+                            )
 
             # agent_ids now includes BSM nodes that appear in egp_sequences
             # (build_dynamic_experiment handles pure-EGP agents separately).
@@ -274,6 +315,11 @@ class DQC(ProtocolPlugin):
             finally:
                 if DynamicExp in self.request_manager.translator.exp_defs:
                     self.request_manager.translator.exp_defs.remove(DynamicExp)
+                if use_continuous and _ent_manager is not None:
+                    try:
+                        await _ent_manager.disable_all(qpu_agent_ids)
+                    except Exception as cleanup_err:
+                        logger.warning(f"[DQC] Failed to disable continuous entanglement: {cleanup_err}")
 
         except Exception as e:
             logger.error(f"DQC processing failed: {e}")
