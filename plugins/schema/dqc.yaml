@@ -63,13 +63,46 @@ components:
                 For circuit_mode 'cisco': a .qasm file path.
                 For circuit_mode 'tket': a dist_commands.txt path.
                 Used when partitioned_commands is not provided.
-            circuit_content:
-              type: string
-              description: >
-                Inline circuit source text (alternative to circuit_file).
-                The plugin writes this to a temp file before parsing.
-                Used when partitioned_commands is not provided.
-    DQCResponse:
+             circuit_content:
+               type: string
+               description: >
+                 Inline circuit source text (alternative to circuit_file).
+                 The plugin writes this to a temp file before parsing.
+                 Used when partitioned_commands is not provided.
+             entanglement_config:
+               type: object
+               description: >
+                 Optional configuration for continuous entanglement generation.
+                 Controls whether the DQC plugin uses continuous generation (if available),
+                 on-demand EGP, or auto-detects from agent capabilities.
+               properties:
+                 mode:
+                   type: string
+                   enum: [auto, continuous, on_demand]
+                   default: auto
+                   description: >
+                     Entanglement mode selection.
+                     'auto': auto-detect from agent capabilities; fall back to on-demand if not available.
+                     'continuous': require continuous generation; fail if any agent doesn't support it.
+                     'on_demand': force on-demand EGP path even if continuous is available.
+                 pool_size:
+                   type: integer
+                   description: >
+                     For continuous generation: number of Bell pairs to maintain in the pool.
+                     Forwarded to agents via entanglement.enable RPC.
+                 min_fidelity:
+                   type: number
+                   description: >
+                     For continuous generation: minimum acceptable fidelity threshold for generated pairs.
+                     Forwarded to agents via entanglement.enable RPC.
+                 comm_positions:
+                   type: array
+                   items:
+                     type: integer
+                   description: >
+                     For continuous generation: list of communication qubit positions to use for storage.
+                     Forwarded to agents via entanglement.enable RPC.
+     DQCResponse:
       title: dqcResponse
       type: object
       required:

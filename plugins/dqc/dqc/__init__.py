@@ -161,28 +161,53 @@ class DQC(ProtocolPlugin):
             else:
                 logger.debug("No router plugin available or no cross-QPU pairs; skipping route discovery")
 
-            # ── 3c. Check for continuous entanglement support ─────────────────
-            # If all QPU agents support continuous entanglement generation,
-            # enable it for the needed pairs and skip on-demand EGP sequences.
-            # Otherwise fall back to the existing on-demand EGP path.
+            # ── 3c. Check for continuous entanglement support and mode ───────
+            # Caller can request: mode="auto" (default), "continuous", or "on_demand".
+            # - auto: auto-detect from capabilities, graceful fallback to on-demand
+            # - continuous: require all agents support it, fail if not
+            # - on_demand: force on-demand EGP, skip continuous even if available
             use_continuous = False
             _ent_manager = None
             qpu_agent_ids = sorted(set(str(c.get("qpu_id")) for c in commands))
+            ent_config = payload.get("entanglement_config", {})
+            ent_mode = ent_config.get("mode", "auto")
 
-            if qpu_pairs and hasattr(self.ctx, "rpc_client") and self.ctx.rpc_client:
+            if ent_mode == "on_demand":
+                logger.info("[DQC] Entanglement mode: on_demand (forced)")
+                use_continuous = False
+            elif qpu_pairs and hasattr(self.ctx, "rpc_client") and self.ctx.rpc_client:
                 try:
                     _ent_manager = EntanglementManager(self.ctx)
                     capabilities = await _ent_manager.query_capabilities(qpu_agent_ids)
-                    use_continuous = all(
+                    all_support = all(
                         capabilities.get(qpu, {}).get("continuous_generation", False)
                         for qpu in qpu_agent_ids
                     )
+
+                    if ent_mode == "continuous":
+                        # Caller explicitly requested continuous — fail if not available
+                        if not all_support:
+                            lacking = [q for q in qpu_agent_ids
+                                      if not capabilities.get(q, {}).get("continuous_generation", False)]
+                            raise Exception(
+                                f"[DQC] Continuous entanglement requested (mode='continuous') but "
+                                f"agent(s) {lacking} do not support it"
+                            )
+                        use_continuous = True
+                    else:
+                        # ent_mode == "auto" — auto-detect, graceful fallback
+                        use_continuous = all_support
+
                 except Exception as e:
-                    logger.debug(f"[DQC] Continuous entanglement check failed: {e}")
-                    use_continuous = False
+                    if ent_mode == "continuous":
+                        # Caller explicitly requested continuous — re-raise the error
+                        raise
+                    else:
+                        # Auto mode — log and fall back gracefully
+                        logger.debug(f"[DQC] Continuous entanglement check failed: {e}")
+                        use_continuous = False
 
             if use_continuous:
-                ent_config = payload.get("entanglement_config", {})
                 try:
                     enabled = await _ent_manager.enable_for_circuit(qpu_pairs, ent_config)
                     if enabled:
