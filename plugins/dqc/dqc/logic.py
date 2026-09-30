@@ -61,7 +61,7 @@ class DQCLogic:
             logger.debug(f"Skipping BSM node {bsm_id} (state={state.get('value') if state else 'unknown'})")
         return []
 
-    def build_dynamic_experiment(self, exp_name, commands_list, node_types=None, egp_sequences=None):
+    def build_dynamic_experiment(self, exp_name, commands_list, node_types=None, egp_sequences=None, prefill_slots=0):
         """Build a dynamic Experiment class from the commands list.
 
         Each generated sequence block will store its original commands in a
@@ -86,6 +86,9 @@ class DQCLogic:
             directly instead of a ``BlockSequence``.  Pure-EGP agents (e.g. BSM
             nodes) that have no gate blocks in *commands_list* are also built
             from this dict.
+        :param prefill_slots: Number of TDMA timeslots to reserve for pre-fill.
+            When > 0, a ``PrefillSequence`` is prepended to each QPU agent's
+            sequence list. All other sequences depend on prefill completing.
         :returns: The generated Experiment class, or ``None`` if there is
             nothing to schedule.
         """
@@ -276,6 +279,26 @@ class DQCLogic:
                 })
 
                 agent_sequences_list.append(BlockSequence)
+
+            # ── Prepend prefill sequence if requested ────────────────────────
+            # When using continuous entanglement, the agent may need reserved
+            # hardware time to finalize the pre-filled pool before circuit
+            # execution. This sequence is prepended to each QPU agent, and all
+            # subsequent sequences depend on it.
+            if prefill_slots > 0 and _agent_node_type == "QNode":
+                prefill_deps = []
+                PrefillSequence = type("PrefillSequence", (Sequence,), {
+                    "name": "entanglement_prefill",
+                    "class_name": "entanglement_prefill",
+                    "duration": Constants.SLOTSIZE * prefill_slots,
+                    "dependency": prefill_deps,
+                })
+                # Insert at the front
+                agent_sequences_list.insert(0, PrefillSequence)
+                # Update all other sequences to depend on prefill
+                for seq in agent_sequences_list[1:]:
+                    if not seq.dependency:
+                        seq.dependency = ["entanglement_prefill"]
 
             DynamicAgentSeq.sequences = agent_sequences_list
             DynamicExperiment.agent_sequences.append(DynamicAgentSeq)

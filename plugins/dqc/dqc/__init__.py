@@ -203,7 +203,20 @@ class DQC(ProtocolPlugin):
             if use_continuous:
                 logger.info("[DQC] Using continuous entanglement generation")
 
-            # ── 3d. Pre-schedule entanglement commands (on-demand path only) ────
+            # ── 3d. Extract prefill slot requirement from capabilities ─────────
+            # If continuous entanglement is active and agents report needing
+            # hardware time for pre-fill, compute the max across all QPUs.
+            # This is used to prepend a PrefillSequence to the schedule.
+            prefill_slots = 0
+            if use_continuous:
+                prefill_slots = max(
+                    capabilities.get(qpu, {}).get("prefill_slots", 0)
+                    for qpu in qpu_agent_ids
+                ) if qpu_agent_ids else 0
+                if prefill_slots > 0:
+                    logger.info(f"[DQC] Reserving {prefill_slots} TDMA slots for pre-fill")
+
+            # ── 3f. Pre-schedule entanglement commands (on-demand path only) ────
             # Pre-scheduling only makes sense when using on-demand EGP, since it
             # reorders entanglement_gen commands to hide on-demand generation
             # latency. With continuous entanglement, pairs are already generated
@@ -212,7 +225,7 @@ class DQC(ProtocolPlugin):
             if not use_continuous:
                 pre_ent_stats = self._pre_schedule(labeled)
 
-            # ── 3e. Build egp_sequences map and collect BSM agent IDs ─────────
+            # ── 3g. Build egp_sequences map and collect BSM agent IDs ─────────
             # When continuous entanglement is active, egp_sequences stays empty
             # and entanglement_gen positions use BlockSequence placeholders.
             # The agent consumes pairs from its EntanglementSource during
@@ -284,7 +297,8 @@ class DQC(ProtocolPlugin):
             # ── 4. Build dynamic experiment structure ─────────────────────────
             exp_name = f"DQC_{rid}"
             DynamicExp = self.logic.build_dynamic_experiment(
-                exp_name, commands, node_types=node_types, egp_sequences=egp_sequences
+                exp_name, commands, node_types=node_types, egp_sequences=egp_sequences,
+                prefill_slots=prefill_slots
             )
             if not DynamicExp:
                 raise Exception("No commands to process")

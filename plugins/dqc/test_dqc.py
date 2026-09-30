@@ -540,3 +540,110 @@ class TestContinuousEntanglementPreScheduling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrefillSequenceInsertion(unittest.TestCase):
+    """Tests for prefill sequence prepending in build_dynamic_experiment()."""
+
+    def setUp(self):
+        self.context = MagicMock()
+        self.context.config = MagicMock()
+        self.logic = DQCLogic(self.context)
+
+    def _make_simple_commands(self):
+        """Helper: simple circuit with one local gate."""
+        return [
+            {"timeslot": 0, "qpu_id": "LBNL-A", "command": "H", "op": "gate", "qpus_involved": ["LBNL-A"]},
+        ]
+
+    def test_no_prefill_when_slots_zero(self):
+        """When prefill_slots=0, no PrefillSequence is inserted."""
+        commands = self._make_simple_commands()
+        exp = self.logic.build_dynamic_experiment("TestNoPrefill", commands, prefill_slots=0)
+        
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        # Should have only one sequence: the gate block
+        self.assertEqual(len(lbnl_a.sequences), 1)
+        self.assertNotEqual(lbnl_a.sequences[0].name, "entanglement_prefill")
+
+    def test_prefill_sequence_inserted_when_slots_positive(self):
+        """When prefill_slots > 0, PrefillSequence is prepended."""
+        commands = self._make_simple_commands()
+        exp = self.logic.build_dynamic_experiment("TestWithPrefill", commands, prefill_slots=2)
+        
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        # Should have 2 sequences: prefill + gate block
+        self.assertEqual(len(lbnl_a.sequences), 2)
+        
+        # First sequence should be prefill
+        prefill_seq = lbnl_a.sequences[0]
+        self.assertEqual(prefill_seq.name, "entanglement_prefill")
+        self.assertEqual(prefill_seq.class_name, "entanglement_prefill")
+        # Duration should be 2 slots (2 * 100ms = 200ms = 0.2s)
+        expected_duration = mock_constants.Constants.SLOTSIZE * 2
+        self.assertEqual(prefill_seq.duration, expected_duration)
+
+    def test_subsequent_sequences_depend_on_prefill(self):
+        """All sequences after prefill should list it as a dependency."""
+        commands = self._make_simple_commands()
+        exp = self.logic.build_dynamic_experiment("TestPrefillDeps", commands, prefill_slots=1)
+        
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        
+        # First: prefill with no dependencies
+        prefill_seq = lbnl_a.sequences[0]
+        self.assertEqual(prefill_seq.name, "entanglement_prefill")
+        self.assertEqual(prefill_seq.dependency, [])
+        
+        # Second: gate block should depend on prefill
+        gate_seq = lbnl_a.sequences[1]
+        self.assertIn("entanglement_prefill", gate_seq.dependency)
+
+    def test_prefill_only_on_qnodes_not_bsm(self):
+        """Prefill is only inserted for QNode agents, not BSM nodes."""
+        commands = [
+            {"timeslot": 0, "qpu_id": "LBNL-A", "command": "H", "op": "gate", "qpus_involved": ["LBNL-A"]},
+        ]
+        # Simulate a BSM node with no gate commands (pure EGP)
+        node_types = {"LBNL-BSM": "BSMNode"}
+        egp_sequences = {"LBNL-BSM": {"ent_0": self.QnodeEGP}}
+        
+        exp = self.logic.build_dynamic_experiment(
+            "TestBSMNoPrefill", commands,
+            node_types=node_types,
+            egp_sequences=egp_sequences,
+            prefill_slots=2
+        )
+        
+        # QPU agent should have prefill
+        lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+        self.assertEqual(lbnl_a.sequences[0].name, "entanglement_prefill")
+        
+        # BSM agent should NOT have prefill
+        bsm = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-BSM")
+        # BSM sequences are pure EGP, no prefill
+        self.assertFalse(any(s.name == "entanglement_prefill" for s in bsm.sequences))
+
+    def test_prefill_duration_scales_with_slots(self):
+        """PrefillSequence duration scales linearly with prefill_slots."""
+        commands = self._make_simple_commands()
+        
+        for slots in [1, 3, 5]:
+            exp = self.logic.build_dynamic_experiment(
+                f"TestScale{slots}", commands, prefill_slots=slots
+            )
+            lbnl_a = next(s for s in exp.agent_sequences if s.name == "Seq_LBNL-A")
+            prefill_seq = lbnl_a.sequences[0]
+            expected_duration = mock_constants.Constants.SLOTSIZE * slots
+            self.assertEqual(prefill_seq.duration, expected_duration)
+
+    # Mock EGP classes for testing
+    class QnodeEGP:
+        name = "QnodeEGP"
+        class_name = "QnodeEGP"
+        duration = timedelta(milliseconds=100)  # 100ms
+
+    class BSMnodeEGP:
+        name = "BSMnodeEGP"
+        class_name = "BSMnodeEGP"
+        duration = timedelta(milliseconds=100)

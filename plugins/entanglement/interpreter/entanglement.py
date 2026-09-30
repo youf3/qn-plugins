@@ -32,6 +32,9 @@ _NO_CAPS = {
     "max_peers": 0,
     "max_pool_size": 0,
     "supports_fidelity_tracking": False,
+    "supports_prefill": False,
+    "prefill_slots": 0,
+    "supports_background_refill": False,
 }
 
 
