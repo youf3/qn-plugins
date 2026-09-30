@@ -136,9 +136,6 @@ class DQC(ProtocolPlugin):
             # ── 2. Validate + Label via qnpack ────────────────────────────────
             labeled, process_maps = self._label_commands(partitioned)
 
-            # ── 2b. Pre-schedule entanglement commands ────────────────────────
-            pre_ent_stats = self._pre_schedule(labeled)
-
             # ── 3. Convert labeled IR → flat timeslot schedule ────────────────
             qpu_info, qpu_id_to_label, label_to_qpu_id, bsm_nodes, raw_topology = get_qpu_info_from_topology(self.ctx)
             commands = labeled_ir_to_timeslot_schedule(labeled, process_maps, qpu_id_to_label)
@@ -206,7 +203,16 @@ class DQC(ProtocolPlugin):
             if use_continuous:
                 logger.info("[DQC] Using continuous entanglement generation")
 
-            # ── 3d. Build egp_sequences map and collect BSM agent IDs ─────────
+            # ── 3d. Pre-schedule entanglement commands (on-demand path only) ────
+            # Pre-scheduling only makes sense when using on-demand EGP, since it
+            # reorders entanglement_gen commands to hide on-demand generation
+            # latency. With continuous entanglement, pairs are already generated
+            # before the circuit starts, so latency-hiding is pointless.
+            pre_ent_stats = None
+            if not use_continuous:
+                pre_ent_stats = self._pre_schedule(labeled)
+
+            # ── 3e. Build egp_sequences map and collect BSM agent IDs ─────────
             # When continuous entanglement is active, egp_sequences stays empty
             # and entanglement_gen positions use BlockSequence placeholders.
             # The agent consumes pairs from its EntanglementSource during
