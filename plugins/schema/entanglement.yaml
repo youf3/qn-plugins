@@ -207,27 +207,27 @@ components:
           type: string
         payload:
           type: object
-     CapabilitiesResponse:
-       title: capabilitiesResponse
-       type: object
-       required:
-         - continuous_generation
-       properties:
-         continuous_generation:
-           type: boolean
-         max_peers:
-           type: integer
-         max_pool_size:
-           type: integer
-         supports_fidelity_tracking:
-           type: boolean
-         supports_prefill:
-           type: boolean
-           description: Source can pre-generate a pool before circuit starts
-         prefill_slots:
-           type: integer
-           description: TDMA timeslots needed to pre-fill pool (0 = instant)
-         supports_background_refill:
-           type: boolean
-           description: Source autonomously refills consumed pairs during execution
+    CapabilitiesResponse:
+      title: capabilitiesResponse
+      type: object
+      required:
+        - continuous_generation
+      properties:
+        continuous_generation:
+          type: boolean
+        max_peers:
+          type: integer
+        max_pool_size:
+          type: integer
+        supports_fidelity_tracking:
+          type: boolean
+        supports_prefill:
+          type: boolean
+          description: Source can pre-generate a pool before circuit starts
+        prefill_slots:
+          type: integer
+          description: TDMA timeslots needed to pre-fill pool (0 = instant)
+        supports_background_refill:
+          type: boolean
+          description: Source autonomously refills consumed pairs during execution
 defaultContentType: application/json
