@@ -1,0 +1,18 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://agent-dev.es.net/",
+    "ANTHROPIC_AUTH_TOKEN": "7cc39c316072d71796c14211261f6f0ee9dc1c9115298dd67772c05395544115",
+    "ANTHROPIC_MODEL": "vertex/gemini-2.5-pro",
+    "ANTHROPIC_SMALL_FAST_MODEL": "vertex/gemini-2.5-flash"
+  },
+  "permissions": {
+    "allowedTools": [
+      "Read",
+      "Write",
+      "Bash(git *)"
+    ],
+    "deny": [
+      "Read(./.env*)"
+    ]
+  }
+}
