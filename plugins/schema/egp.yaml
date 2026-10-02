@@ -49,9 +49,9 @@ components:
               type: string
              fidelity:
                type: number
-             owner:
-               type: string
-     EGPQuery:
+              owner:
+                type: string
+    EGPQuery:
       title: egpQuery
       type: object
       required:

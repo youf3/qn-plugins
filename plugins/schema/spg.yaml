@@ -45,9 +45,9 @@ components:
               type: number
              duration:
                type: number
-             owner:
-               type: string
-     SPGQuery:
+              owner:
+                type: string
+    SPGQuery:
       title: spgQuery
       type: object
       required:

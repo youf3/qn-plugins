@@ -40,9 +40,9 @@ components:
                minItems: 1
                items:
                  type: string
-             owner:
-               type: string
-     bsmQuery:
+              owner:
+                type: string
+    bsmQuery:
       title: bsmQuery
       type: object
       required:
