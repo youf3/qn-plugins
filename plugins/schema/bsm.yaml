@@ -34,14 +34,14 @@ components:
           type: object
           required:
             - nodes            
-          properties:
+           properties:
              nodes:
                type: array
                minItems: 1
                items:
                  type: string
-              owner:
-                type: string
+             owner:
+               type: string
     bsmQuery:
       title: bsmQuery
       type: object

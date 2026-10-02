@@ -43,10 +43,10 @@ components:
                 type: string
             rate:
               type: number
-             duration:
-               type: number
-              owner:
-                type: string
+            duration:
+              type: number
+            owner:
+              type: string
     SPGQuery:
       title: spgQuery
       type: object
