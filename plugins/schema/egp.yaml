@@ -47,9 +47,11 @@ components:
               type: number
             bellState:
               type: string
-            fidelity:
-              type: number
-    EGPQuery:
+             fidelity:
+               type: number
+             owner:
+               type: string
+     EGPQuery:
       title: egpQuery
       type: object
       required:

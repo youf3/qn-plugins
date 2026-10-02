@@ -43,9 +43,11 @@ components:
                 type: string
             rate:
               type: number
-            duration:
-              type: number
-    SPGQuery:
+             duration:
+               type: number
+             owner:
+               type: string
+     SPGQuery:
       title: spgQuery
       type: object
       required:
