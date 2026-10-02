@@ -65,7 +65,8 @@ class SPG(ProtocolPlugin):
 
         # Create Request object through RequestManager
         # Payload encapsulates the plugin request (nodes, rate, duration are already in payload)
-        req = self.request_manager.new_request(payload=payload, parameters=parameters)
+        owner = getattr(payload.payload, 'owner', None)
+        req = self.request_manager.new_request(payload=payload, parameters=parameters, owner=owner)
 
         # Schedule the request
         rc = await self.request_manager.schedule(req, blocking=True)

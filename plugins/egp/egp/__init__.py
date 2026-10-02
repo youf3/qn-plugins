@@ -75,7 +75,8 @@ class EGP(ProtocolPlugin):
 
         # Create Request object through RequestManager
         # Payload encapsulates the plugin request (source, destination, pairs, bellState, fidelity)
-        request = self.request_manager.new_request(payload=egpreq, parameters=parameters)
+        owner = getattr(egpreq.payload, 'owner', None)
+        request = self.request_manager.new_request(payload=egpreq, parameters=parameters, owner=owner)
 
         # Schedule the request for execution
         fut = self.request_manager.noSchedule(request, blocking=True)
