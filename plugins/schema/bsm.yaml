@@ -33,15 +33,15 @@ components:
         payload:
           type: object
           required:
-            - nodes            
-           properties:
-             nodes:
-               type: array
-               minItems: 1
-               items:
-                 type: string
-             owner:
-               type: string
+            - nodes
+          properties:
+            nodes:
+              type: array
+              minItems: 1
+              items:
+                type: string
+            owner:
+              type: string
     bsmQuery:
       title: bsmQuery
       type: object
@@ -62,7 +62,7 @@ components:
             rid:
               type: string
     BSMResponse:
-      title:  bsmResponse
+      title: bsmResponse
       type: object
       required:
         - status
