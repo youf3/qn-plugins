@@ -75,6 +75,11 @@ class DQCLogic:
         blocks and real hardware entanglement sequences in a single
         ``experiment.submit`` call per agent.
 
+        Prefill reservation (for continuous entanglement preparation) is now
+        handled transparently by the scheduler, which reads ``prefill_map``
+        from the experiment definition. The plugin computes prefill_map
+        dynamically based on circuit entanglement operations.
+
         :param exp_name: Unique name for the generated experiment class.
         :param commands_list: Flat list of command dicts (gate + entanglement).
         :param node_types: Optional dict mapping agent/QPU IDs to their node
