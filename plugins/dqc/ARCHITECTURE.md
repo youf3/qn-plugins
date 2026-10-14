@@ -51,15 +51,16 @@ When agents register with the controller, they report entanglement capabilities 
 ```json
 {
   "capabilities": {
-    "entanglement": {
-      "continuous_entanglement": true/false,
-      "prefill_cost_per_pair": <int>  // time slots needed to prefill one pair
-    }
+    "continuous_entanglement": true/false,
+    "prefill_cost_per_pair": <int>  // time slots needed to prefill one pair
   }
 }
 ```
 
-These are **static hardware properties**, set once at registration time.
+These are **static hardware properties**, set once at registration time. Example configurations are provided in:
+- `/qn-mq/quantnet_mq/schema/examples/topology/conf_lbnl-q.json`
+- `/qn-mq/quantnet_mq/schema/examples/topology/conf_ucb-q.json`
+- `/qn-mq/quantnet_mq/schema/examples/topology/datacenter/conf_qpu-*.json` (new datacenter topology examples)
 
 ### Dynamic Prefill Computation
 
@@ -198,7 +199,13 @@ Returns:
 }
 ```
 
-Gracefully handles missing registration data (defaults to on-demand only).
+**Robustness:** Handles both plain dicts (from test mocks) and schema proxy objects (from MongoDB via `python_jsonschema_objects`):
+- Checks `isinstance(node, dict)` for plain dicts; uses `.get()` method
+- Falls back to `getattr()` for schema objects (Munch-like structures)
+- Repeats for capabilities sub-object (may also be schema object)
+- Gracefully defaults to on-demand mode if capabilities are missing or unreadable
+
+This flexibility allows the same code to work in unit tests (with mocked dicts) and production (with schema objects from MongoDB).
 
 #### `_compute_prefill_map(commands, qpu_agent_ids, capabilities, use_continuous)`
 
