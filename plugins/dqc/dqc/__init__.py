@@ -133,10 +133,37 @@ class DQC(ProtocolPlugin):
                     node = node_data[0]
                     # Extract entanglement capabilities from node registration
                     # These are hardware properties set at agent registration time
-                    ent_cap = node.get("capabilities", {}).get("entanglement", {})
+                    # Capabilities are stored directly in the registration, not nested
+                    
+                    # Handle both plain dicts and schema proxy objects
+                    try:
+                        # Try dict-like access first
+                        if isinstance(node, dict):
+                            caps = node.get("capabilities", {})
+                        else:
+                            # Schema object — try attribute access
+                            caps = getattr(node, "capabilities", None) or {}
+                    except (AttributeError, TypeError):
+                        caps = {}
+                    
+                    # Extract values from capabilities dict/object
+                    continuous_ent = False
+                    prefill_cost = 0
+                    
+                    if isinstance(caps, dict):
+                        continuous_ent = caps.get("continuous_entanglement", False)
+                        prefill_cost = caps.get("prefill_cost_per_pair", 0)
+                    else:
+                        # Try attribute access for schema objects
+                        try:
+                            continuous_ent = getattr(caps, "continuous_entanglement", False)
+                            prefill_cost = getattr(caps, "prefill_cost_per_pair", 0)
+                        except (AttributeError, TypeError):
+                            pass
+                    
                     results[agent_id] = {
-                        "continuous_entanglement": ent_cap.get("continuous_entanglement", False),
-                        "prefill_cost_per_pair": ent_cap.get("prefill_cost_per_pair", 0),
+                        "continuous_entanglement": continuous_ent,
+                        "prefill_cost_per_pair": prefill_cost,
                     }
                 else:
                     # No registration data — default to on-demand only
