@@ -1,7 +1,9 @@
 import unittest
 import os
 import sys
-from unittest.mock import MagicMock
+import tempfile
+import configparser
+from unittest.mock import MagicMock, patch
 from datetime import timedelta
 
 # --- MOCKING MODULES BEFORE ANY DQC IMPORTS ---
@@ -123,7 +125,7 @@ class TestDQCLogic(unittest.TestCase):
 
         self.assertEqual(len(seqs), 3)
         self.assertEqual(seqs[0].name, "Block_0_waiting")
-        # With DQC_TIMESLOT_MS=3 and SLOTSIZE=1ms:
+        # With dqc_timeslot_ms=3 (from dqc.cfg or default) and SLOTSIZE=1ms:
         # block_0: 1 cmd → 3ms DQC → ceil(3ms/1ms)=3 slots → 3ms duration
         self.assertEqual(seqs[0].duration, timedelta(milliseconds=3))
 
@@ -716,6 +718,101 @@ class TestPrefillMapOnExperiment(unittest.TestCase):
         
         self.assertTrue(hasattr(exp, "prefill_map"))
         self.assertEqual(exp.prefill_map, {})
+
+
+class TestDQCConfigLoading(unittest.TestCase):
+    """Test DQC plugin configuration file loading."""
+
+    def setUp(self):
+        """Set up mocks for each test."""
+        self.mock_context = MagicMock()
+
+    def test_config_file_with_custom_values(self):
+        """Load dqc.cfg with custom scheduling constants."""
+        # Create a temporary config file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
+            f.write("""\
+[scheduling]
+pre_schedule_entanglement = false
+expected_ent_latency_ns = 2000000
+one_q_gate_duration_ns = 6000
+two_q_gate_duration_ns = 12000
+dqc_timeslot_ms = 4
+""")
+            temp_cfg = f.name
+
+        try:
+            # Patch os.path.exists and os.path.join to return our temp file
+            from dqc import DQC
+            with patch('dqc.os.path.abspath') as mock_abspath, \
+                 patch('dqc.os.path.dirname') as mock_dirname, \
+                 patch('dqc.os.path.join') as mock_join, \
+                 patch('dqc.os.path.exists') as mock_exists:
+                
+                # Make the path resolution point to our temp file
+                mock_abspath.return_value = "/fake/path/__init__.py"
+                mock_dirname.side_effect = lambda x: "/fake/path" if "/__init__" in x else "/fake"
+                mock_join.return_value = temp_cfg
+                mock_exists.return_value = True
+
+                dqc = DQC(self.mock_context)
+
+                # Verify custom values were loaded
+                self.assertFalse(dqc.PRE_SCHEDULE_ENTANGLEMENT)
+                self.assertEqual(dqc.EXPECTED_ENT_LATENCY_NS, 2000000)
+                self.assertEqual(dqc.ONE_Q_GATE_DURATION_NS, 6000)
+                self.assertEqual(dqc.TWO_Q_GATE_DURATION_NS, 12000)
+                self.assertEqual(dqc.DQC_TIMESLOT_MS, 4)
+        finally:
+            os.unlink(temp_cfg)
+
+    def test_config_file_missing_uses_defaults(self):
+        """Use default values when dqc.cfg does not exist."""
+        from dqc import DQC
+        with patch('dqc.os.path.exists') as mock_exists:
+            mock_exists.return_value = False
+            
+            dqc = DQC(self.mock_context)
+            
+            # Verify defaults are used
+            self.assertTrue(dqc.PRE_SCHEDULE_ENTANGLEMENT)
+            self.assertEqual(dqc.EXPECTED_ENT_LATENCY_NS, 1000000)
+            self.assertEqual(dqc.ONE_Q_GATE_DURATION_NS, 5000)
+            self.assertEqual(dqc.TWO_Q_GATE_DURATION_NS, 10700)
+            self.assertEqual(dqc.DQC_TIMESLOT_MS, 3)
+
+    def test_config_file_partial_overrides(self):
+        """Partial config file overrides only specified options."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False) as f:
+            f.write("""\
+[scheduling]
+expected_ent_latency_ns = 3000000
+dqc_timeslot_ms = 5
+""")
+            temp_cfg = f.name
+
+        try:
+            from dqc import DQC
+            with patch('dqc.os.path.abspath') as mock_abspath, \
+                 patch('dqc.os.path.dirname') as mock_dirname, \
+                 patch('dqc.os.path.join') as mock_join, \
+                 patch('dqc.os.path.exists') as mock_exists:
+                
+                mock_abspath.return_value = "/fake/path/__init__.py"
+                mock_dirname.side_effect = lambda x: "/fake/path" if "/__init__" in x else "/fake"
+                mock_join.return_value = temp_cfg
+                mock_exists.return_value = True
+
+                dqc = DQC(self.mock_context)
+
+                # Verify only specified values override defaults
+                self.assertTrue(dqc.PRE_SCHEDULE_ENTANGLEMENT)  # default
+                self.assertEqual(dqc.EXPECTED_ENT_LATENCY_NS, 3000000)  # overridden
+                self.assertEqual(dqc.ONE_Q_GATE_DURATION_NS, 5000)  # default
+                self.assertEqual(dqc.TWO_Q_GATE_DURATION_NS, 10700)  # default
+                self.assertEqual(dqc.DQC_TIMESLOT_MS, 5)  # overridden
+        finally:
+            os.unlink(temp_cfg)
 
 
 if __name__ == "__main__":

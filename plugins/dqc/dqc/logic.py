@@ -5,16 +5,20 @@ from quantnet_controller.common.experimentdefinitions import Experiment, AgentSe
 from quantnet_controller.common.constants import Constants
 from collections import defaultdict
 
-# Duration of one DQC timeslot from the partitioner (timeslot_schedule.json).
-# Multiple DQC timeslots may fit inside a single agent scheduler slot (SLOTSIZE).
-DQC_TIMESLOT_MS = 3
-
 logger = logging.getLogger(__name__)
 
 
 class DQCLogic:
-    def __init__(self, context):
+    def __init__(self, context, dqc_timeslot_ms=3):
+        """Initialize DQCLogic.
+
+        :param context: ControllerContextManager instance
+        :param dqc_timeslot_ms: Duration of one DQC timeslot in milliseconds.
+            Multiple DQC timeslots may fit inside a single agent scheduler slot (SLOTSIZE).
+            Defaults to 3 ms if not provided.
+        """
         self.context = context
+        self.dqc_timeslot_ms = dqc_timeslot_ms
 
     @staticmethod
     def extract_qpu_pairs(commands_list):
@@ -263,7 +267,7 @@ class DQCLogic:
                 # ── Standard DQC gate block ───────────────────────────────────
                 seq_name = f"Block_{b_idx}_{first_op}"
 
-                total_dqc_ms += len(block) * DQC_TIMESLOT_MS
+                total_dqc_ms += len(block) * self.dqc_timeslot_ms
                 new_total_slots = math.ceil(total_dqc_ms / slotsize_ms)
                 agent_slots = max(new_total_slots - slots_allocated, 1)
                 slots_allocated += agent_slots

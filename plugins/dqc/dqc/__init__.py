@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import tempfile
+import configparser
 
 from munch import Munch
 
@@ -78,15 +79,12 @@ def _to_plain(obj):
 
 
 class DQC(ProtocolPlugin):
-    # ── Pre-entanglement scheduling defaults ──────────────────────────────────
-    # These control whether entanglement_gen commands are moved earlier in
-    # the QPU schedule to overlap Bell-pair generation latency with local
-    # gate execution.  Change the constants here to tune the behaviour;
-    # they will be relocated to plugin config in a future change.
-    PRE_SCHEDULE_ENTANGLEMENT = True
-    EXPECTED_ENT_LATENCY_NS = 1_000_000      # 1 ms — expected Bell-pair gen time
-    ONE_Q_GATE_DURATION_NS = 5000            # ns per single-qubit gate
-    TWO_Q_GATE_DURATION_NS = 10700           # ns per two-qubit gate
+    # Default values for scheduling constants. These are overridden by dqc.cfg if present.
+    _DEFAULT_PRE_SCHEDULE_ENTANGLEMENT = True
+    _DEFAULT_EXPECTED_ENT_LATENCY_NS = 1_000_000      # 1 ms — expected Bell-pair gen time
+    _DEFAULT_ONE_Q_GATE_DURATION_NS = 5000            # ns per single-qubit gate
+    _DEFAULT_TWO_Q_GATE_DURATION_NS = 10700           # ns per two-qubit gate
+    _DEFAULT_DQC_TIMESLOT_MS = 3                      # milliseconds per DQC timeslot
 
     def __init__(self, context):
         super().__init__("dqc", PluginType.PROTOCOL, context)
@@ -95,8 +93,11 @@ class DQC(ProtocolPlugin):
         ]
         self.ctx = context
 
-        # Initialize logic handler
-        self.logic = DQCLogic(context)
+        # Load configuration from dqc.cfg
+        self._load_config()
+
+        # Initialize logic handler with DQC timeslot value
+        self.logic = DQCLogic(context, dqc_timeslot_ms=self.DQC_TIMESLOT_MS)
 
         # Initialize RequestManager
         self.request_manager = RequestManager(
@@ -111,6 +112,67 @@ class DQC(ProtocolPlugin):
 
     def reset(self):
         pass
+
+    # ── Configuration loading ─────────────────────────────────────────────────
+
+    def _load_config(self):
+        """Load DQC scheduling constants from dqc.cfg, or use defaults if missing.
+
+        Configuration is read from plugins/dqc/dqc.cfg (one level up from this file).
+        If the file is missing or any option is absent, hardcoded defaults are used.
+
+        Sets instance attributes:
+        - PRE_SCHEDULE_ENTANGLEMENT (bool)
+        - EXPECTED_ENT_LATENCY_NS (int)
+        - ONE_Q_GATE_DURATION_NS (int)
+        - TWO_Q_GATE_DURATION_NS (int)
+        - DQC_TIMESLOT_MS (int)
+        """
+        # Resolve dqc.cfg path: one level up from this __init__.py (in plugins/dqc/)
+        plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_file = os.path.join(plugin_dir, "dqc.cfg")
+
+        # Set defaults
+        self.PRE_SCHEDULE_ENTANGLEMENT = self._DEFAULT_PRE_SCHEDULE_ENTANGLEMENT
+        self.EXPECTED_ENT_LATENCY_NS = self._DEFAULT_EXPECTED_ENT_LATENCY_NS
+        self.ONE_Q_GATE_DURATION_NS = self._DEFAULT_ONE_Q_GATE_DURATION_NS
+        self.TWO_Q_GATE_DURATION_NS = self._DEFAULT_TWO_Q_GATE_DURATION_NS
+        self.DQC_TIMESLOT_MS = self._DEFAULT_DQC_TIMESLOT_MS
+
+        # If config file exists, read and override defaults
+        if os.path.exists(config_file):
+            config = configparser.ConfigParser()
+            try:
+                config.read(config_file)
+                if config.has_section("scheduling"):
+                    if config.has_option("scheduling", "pre_schedule_entanglement"):
+                        self.PRE_SCHEDULE_ENTANGLEMENT = config.getboolean("scheduling", "pre_schedule_entanglement")
+                    if config.has_option("scheduling", "expected_ent_latency_ns"):
+                        self.EXPECTED_ENT_LATENCY_NS = config.getint("scheduling", "expected_ent_latency_ns")
+                    if config.has_option("scheduling", "one_q_gate_duration_ns"):
+                        self.ONE_Q_GATE_DURATION_NS = config.getint("scheduling", "one_q_gate_duration_ns")
+                    if config.has_option("scheduling", "two_q_gate_duration_ns"):
+                        self.TWO_Q_GATE_DURATION_NS = config.getint("scheduling", "two_q_gate_duration_ns")
+                    if config.has_option("scheduling", "dqc_timeslot_ms"):
+                        self.DQC_TIMESLOT_MS = config.getint("scheduling", "dqc_timeslot_ms")
+
+                logger.info(
+                    "[DQC] Loaded configuration from %s: "
+                    "pre_schedule=%s, ent_latency=%d ns, 1q_gate=%d ns, 2q_gate=%d ns, timeslot=%d ms",
+                    config_file,
+                    self.PRE_SCHEDULE_ENTANGLEMENT,
+                    self.EXPECTED_ENT_LATENCY_NS,
+                    self.ONE_Q_GATE_DURATION_NS,
+                    self.TWO_Q_GATE_DURATION_NS,
+                    self.DQC_TIMESLOT_MS,
+                )
+            except (configparser.Error, ValueError) as e:
+                logger.warning(
+                    "[DQC] Failed to parse config file %s: %s; using defaults",
+                    config_file, e
+                )
+        else:
+            logger.debug("[DQC] Config file %s not found; using defaults", config_file)
 
     # ── Private entanglement capability helpers ───────────────────────────────
 
