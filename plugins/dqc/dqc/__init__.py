@@ -112,6 +112,93 @@ class DQC(ProtocolPlugin):
     def reset(self):
         pass
 
+    # ── Private entanglement capability helpers ───────────────────────────────
+
+    def _read_entanglement_capabilities(self, agent_ids):
+        """Read entanglement capabilities from agent registration (MongoDB).
+
+        Sync method — reads from ResourceManager without RPC.
+        
+        :param agent_ids: List of agent ID strings.
+        :returns: {agent_id: {"continuous_entanglement": bool, "prefill_cost_per_pair": int}}
+            Agents with missing data default to {"continuous_entanglement": False, "prefill_cost_per_pair": 0}
+        :rtype: dict
+        """
+        results = {}
+        for agent_id in agent_ids:
+            try:
+                node_data = self.ctx.rm.get_nodes(agent_id)
+                if node_data and isinstance(node_data, (list, tuple)) and len(node_data) > 0:
+                    node = node_data[0]
+                    # capabilities is a schema Literal object; convert to dict
+                    caps_obj = getattr(node, "capabilities", None)
+                    caps = caps_obj.as_dict() if caps_obj is not None and hasattr(caps_obj, "as_dict") else {}
+                    results[agent_id] = {
+                        "continuous_entanglement": caps.get("continuous_entanglement", False),
+                        "prefill_cost_per_pair": caps.get("prefill_cost_per_pair", 0),
+                    }
+                else:
+                    results[agent_id] = {
+                        "continuous_entanglement": False,
+                        "prefill_cost_per_pair": 0,
+                    }
+            except Exception as e:
+                logger.warning(
+                    "[DQC] Failed to read entanglement capabilities for %s: %s; "
+                    "defaulting to on-demand entanglement",
+                    agent_id, e
+                )
+                results[agent_id] = {
+                    "continuous_entanglement": False,
+                    "prefill_cost_per_pair": 0,
+                }
+        
+        logger.info(
+            "[DQC] Entanglement capabilities: %s",
+            {k: v.get("continuous_entanglement", False) for k, v in results.items()},
+        )
+        return results
+
+    def _compute_prefill_map(self, commands, qpu_agent_ids, capabilities, use_continuous):
+        """Compute dynamic prefill_map from circuit entanglement operations.
+
+        Counts entanglement_gen operations per QPU agent and multiplies by
+        prefill_cost_per_pair from capabilities to determine time reservations.
+
+        :param commands: Flat list of command dicts from timeslot schedule.
+        :param qpu_agent_ids: List of QPU agent ID strings.
+        :param capabilities: Dict from _read_entanglement_capabilities().
+        :param use_continuous: Boolean — whether continuous entanglement is active.
+        :returns: {agent_id: prefill_time_slots} — empty dict if use_continuous is False.
+        :rtype: dict
+        """
+        prefill_map = {}
+        
+        if not use_continuous:
+            # On-demand entanglement — no prefill needed
+            return prefill_map
+        
+        # Count entanglement_gen operations per agent
+        ent_counts = {}
+        for cmd in commands:
+            if cmd.get("op") == "entanglement_gen":
+                # entanglement_gen commands involve multiple QPUs; count for each
+                for qpu in cmd.get("qpus_involved", []):
+                    qpu_id = str(qpu)
+                    ent_counts[qpu_id] = ent_counts.get(qpu_id, 0) + 1
+        
+        # Compute prefill reservation per agent
+        for agent_id in qpu_agent_ids:
+            count = ent_counts.get(agent_id, 0)
+            cost = capabilities.get(agent_id, {}).get("prefill_cost_per_pair", 0)
+            prefill_map[agent_id] = count * cost
+        
+        logger.info(
+            "[DQC] Dynamic prefill_map computed: %s",
+            {k: v for k, v in prefill_map.items() if v > 0}
+        )
+        return prefill_map
+
     # ── Public request handler ────────────────────────────────────────────────
 
     async def handle_dqc_request(self, request):
@@ -227,6 +314,28 @@ class DQC(ProtocolPlugin):
             )
             agent_ids = all_agent_ids
 
+            # ── 3d. Determine entanglement mode and compute prefill_map ────────
+            # Read entanglement capabilities from agent registration (MongoDB).
+            # Capability names: continuous_entanglement (bool), prefill_cost_per_pair (int).
+            # These are static hardware properties set at agent registration.
+            qpu_agent_ids = sorted(list(set(str(c.get("qpu_id")) for c in commands)))
+            capabilities = self._read_entanglement_capabilities(qpu_agent_ids)
+            
+            # Determine entanglement mode: check if all QPU agents support continuous
+            has_continuous_capable = any(
+                capabilities.get(aid, {}).get("continuous_entanglement", False)
+                for aid in qpu_agent_ids
+            )
+            use_continuous = has_continuous_capable
+            logger.info(
+                "[DQC] Entanglement mode: %s (continuous_capable=%s)",
+                "continuous" if use_continuous else "on-demand",
+                has_continuous_capable
+            )
+            
+            # Compute dynamic prefill_map from circuit entanglement operations
+            prefill_map = self._compute_prefill_map(commands, qpu_agent_ids, capabilities, use_continuous)
+
             # ── Resolve rid ───────────────────────────────────────────────────
             rid = getattr(dqc_req.payload, "rid", None) or request.get("id")
             if not rid or rid == "unknown":
@@ -239,6 +348,9 @@ class DQC(ProtocolPlugin):
             DynamicExp = self.logic.build_dynamic_experiment(
                 exp_name, commands, node_types=node_types, egp_sequences=egp_sequences
             )
+            
+            # Set the computed prefill_map on the experiment for the scheduler to read
+            DynamicExp.prefill_map = prefill_map if use_continuous else {}
             if not DynamicExp:
                 raise Exception("No commands to process")
 
