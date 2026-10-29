@@ -306,9 +306,8 @@ class DQC(ProtocolPlugin):
                         _path_objects[route_key] = p
                         logger.info(f"Route found {route_key}: {routes[route_key]}")
                     except Exception as e:
-                        logger.warning(f"Could not find route {route_key}: {e}")
-                        routes[route_key] = None
-                        _path_objects[route_key] = None
+                        logger.error(f"Could not find valid resources for {route_key}: {e}")
+                        raise Exception(f"Could not find valid resources for {route_key}: {e}")
             else:
                 logger.debug("No router plugin available or no cross-QPU pairs; skipping route discovery")
 
@@ -427,7 +426,9 @@ class DQC(ProtocolPlugin):
                 parameters = RequestParameter(exp_name=exp_name, path=agent_ids)
                 req_obj = self.request_manager.new_request(payload=dqc_req, parameters=parameters, rid=rid)
 
-                await self.request_manager.schedule(req_obj, blocking=True)
+                rc = await self.request_manager.schedule(req_obj, blocking=True)
+                if isinstance(rc, Code) and rc != Code.OK:
+                    raise Exception(getattr(req_obj, "error", None) or f"DQC execution failed with status {rc.name}")
 
                 # ── 6. Build simulation payload for caller ────────────────────
                 sim_payload = self._build_sim_payload(
